@@ -84,7 +84,7 @@ void usrp2_mboard_impl::rx_dboard_get(const wax::obj &key_, wax::obj &val){
         return;
 
     case DBOARD_PROP_DBOARD_IFACE:
-        val = _dboard_iface;
+        //val = _dboard_iface;
         return;
 
     case DBOARD_PROP_CODEC:
@@ -145,7 +145,7 @@ void usrp2_mboard_impl::tx_dboard_get(const wax::obj &key_, wax::obj &val){
         return;
 
     case DBOARD_PROP_DBOARD_IFACE:
-        val = _dboard_iface;
+        //val = _dboard_iface;
         return;
 
     case DBOARD_PROP_CODEC:
