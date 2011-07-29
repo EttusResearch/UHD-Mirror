@@ -484,7 +484,8 @@ public:
     }
 
     dboard_iface::sptr get_rx_dboard_iface(size_t chan){
-        return _tree->access<dboard_iface::sptr>(rx_rf_fe_root(chan).branch_path().branch_path() / "iface").get();
+        return dboard_iface::sptr();
+        //return _tree->access<dboard_iface::sptr>(rx_rf_fe_root(chan).branch_path().branch_path() / "iface").get();
     }
 
     sensor_value_t get_rx_sensor(const std::string &name, size_t chan){
@@ -592,7 +593,8 @@ public:
     }
 
     dboard_iface::sptr get_tx_dboard_iface(size_t chan){
-        return _tree->access<dboard_iface::sptr>(tx_rf_fe_root(chan).branch_path().branch_path() / "iface").get();
+        return dboard_iface::sptr();
+        //return _tree->access<dboard_iface::sptr>(tx_rf_fe_root(chan).branch_path().branch_path() / "iface").get();
     }
 
     sensor_value_t get_tx_sensor(const std::string &name, size_t chan){
