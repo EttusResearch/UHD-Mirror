@@ -36,13 +36,13 @@ namespace uhd{
             //! Custom type (technically unsupported by implementation)
             CUSTOM_TYPE =     int('?'),
             //! Complex floating point (64-bit floats) range [-1.0, +1.0]
-            COMPLEX_FLOAT64 = int('d'),
+            COMPLEX_FLOAT64 = int('D'),
             //! Complex floating point (32-bit floats) range [-1.0, +1.0]
-            COMPLEX_FLOAT32 = int('f'),
+            COMPLEX_FLOAT32 = int('F'),
             //! Complex signed integer (16-bit integers) range [-32768, +32767]
-            COMPLEX_INT16 =   int('s'),
+            COMPLEX_INT16 =   int('S'),
             //! Complex signed integer (8-bit integers) range [-128, 127]
-            COMPLEX_INT8 =    int('b')
+            COMPLEX_INT8 =    int('B')
         };
 
         /*!
