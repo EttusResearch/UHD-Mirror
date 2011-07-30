@@ -40,6 +40,9 @@ ELSE()
     SET(UHD_BUILD_INFO "unknown")
 ENDIF()
 
+SET(UHD_BUILD_INFO_DISCOVERY FALSE)
+SET(UHD_BUILD_INFO "vendor")
+
 IF(UHD_BUILD_INFO_DISCOVERY)
 
     #grab the git ref id for the current head
