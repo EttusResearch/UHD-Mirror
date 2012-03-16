@@ -47,6 +47,8 @@ struct UHD_API stream_args_t{
         otw_format = otw;
     }
 
+    std::string foo;
+
     /*!
      * The CPU format is a string that describes the format of host memory.
      * Conversions for the following CPU formats have been implemented:

@@ -30,6 +30,8 @@ namespace uhd{
      * The receive routines will convert IF data headers into metadata.
      */
     struct UHD_API rx_metadata_t{
+        int foo;
+
         //! Has time specification?
         bool has_time_spec;
 
@@ -95,6 +97,8 @@ namespace uhd{
      * The send routines will convert the metadata to IF data headers.
      */
     struct UHD_API tx_metadata_t{
+        int foo;
+
         /*!
          * Has time specification?
          * - Set false to send immediately.
@@ -122,6 +126,8 @@ namespace uhd{
      * Async metadata structure for describing transmit related events.
      */
     struct UHD_API async_metadata_t{
+        int foo;
+
         //! The channel number in a mimo configuration
         size_t channel;
 

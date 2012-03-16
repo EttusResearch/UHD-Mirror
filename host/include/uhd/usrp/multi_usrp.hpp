@@ -94,6 +94,10 @@ class UHD_API multi_usrp : boost::noncopyable{
 public:
     typedef boost::shared_ptr<multi_usrp> sptr;
 
+    int foo(int x){
+        return 42+x;
+    }
+
     //! A wildcard motherboard index
     static const size_t ALL_MBOARDS = size_t(~0);
 

@@ -44,6 +44,7 @@ namespace uhd{
      * the device will begin streaming at a time specified by time_spec.
      */
     struct UHD_API stream_cmd_t{
+        int foo;
 
         enum stream_mode_t {
             STREAM_MODE_START_CONTINUOUS   = 'a',
