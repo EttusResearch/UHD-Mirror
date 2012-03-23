@@ -15,6 +15,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 
+#include "dboard_validator.hpp"
 #include "dboard_ctor_args.hpp"
 #include <uhd/usrp/dboard_base.hpp>
 #include <boost/format.hpp>
@@ -73,6 +74,8 @@ xcvr_dboard_base::xcvr_dboard_base(ctor_args_t args) : dboard_base(args){
             "cannot create xcvr board when the tx id is \"%s\""
         ) % dboard_id_t::none().to_pp_string()));
     }
+    validate_dboard_xx(get_iface(), get_rx_id(), "rx");
+    validate_dboard_xx(get_iface(), get_tx_id(), "tx");
 }
 
 /***********************************************************************
@@ -85,6 +88,7 @@ rx_dboard_base::rx_dboard_base(ctor_args_t args) : dboard_base(args){
             " -> expected a tx id of \"%s\""
         ) % get_tx_id().to_pp_string() % dboard_id_t::none().to_pp_string()));
     }
+    validate_dboard_xx(get_iface(), get_rx_id(), "rx");
 }
 
 /***********************************************************************
@@ -97,4 +101,5 @@ tx_dboard_base::tx_dboard_base(ctor_args_t args) : dboard_base(args){
             " -> expected a rx id of \"%s\""
         ) % get_rx_id().to_pp_string() % dboard_id_t::none().to_pp_string()));
     }
+    validate_dboard_xx(get_iface(), get_tx_id(), "tx");
 }

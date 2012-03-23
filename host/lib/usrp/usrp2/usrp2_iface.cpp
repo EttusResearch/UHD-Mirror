@@ -106,6 +106,9 @@ public:
         _protocol_compat = ntohl(ctrl_data.proto_ver);
 
         mb_eeprom = mboard_eeprom_t(*this, mboard_eeprom_t::MAP_N100);
+        if (this->get_rev() == USRP_NXXX){
+            throw uhd::runtime_error("operation borked with code 12, contact support@ettus.com");
+        }
     }
 
     ~usrp2_iface_impl(void){UHD_SAFE_CALL(
