@@ -1,5 +1,5 @@
 //
-// Copyright 2010-2011 Ettus Research LLC
+// Copyright 2010-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -30,12 +30,19 @@ extern "C" {
 #endif
 
 //fpga and firmware compatibility numbers
-#define USRP2_FPGA_COMPAT_NUM 9
-#define USRP2_FW_COMPAT_NUM 11
-#define USRP2_FW_VER_MINOR 2
+#define USRP2_FPGA_COMPAT_NUM 10
+#define USRP2_FW_COMPAT_NUM 12
+#define USRP2_FW_VER_MINOR 3
 
 //used to differentiate control packets over data port
 #define USRP2_INVALID_VRT_HEADER 0
+
+typedef struct{
+    uint32_t sequence;
+    uint32_t vrt_hdr;
+    uint32_t ip_addr;
+    uint32_t udp_port;
+} usrp2_stream_ctrl_t;
 
 // udp ports for the usrp2 communication
 // Dynamic and/or private ports: 49152-65535
@@ -44,12 +51,14 @@ extern "C" {
 #define USRP2_UDP_RX_DSP0_PORT 49156
 #define USRP2_UDP_TX_DSP0_PORT 49157
 #define USRP2_UDP_RX_DSP1_PORT 49158
+#define USRP2_UDP_FIFO_CRTL_PORT 49159
 #define USRP2_UDP_UART_BASE_PORT 49170
 #define USRP2_UDP_UART_GPS_PORT 49172
 
 // Map for virtual firmware regs (not very big so we can keep it here for now)
 #define U2_FW_REG_LOCK_TIME 0
 #define U2_FW_REG_LOCK_GPID 1
+#define U2_FW_REG_HAS_GPSDO 3
 #define U2_FW_REG_VER_MINOR 7
 
 ////////////////////////////////////////////////////////////////////////
@@ -65,6 +74,8 @@ extern "C" {
 ////////////////////////////////////////////////////////////////////////
 #define USRP2_EE_MBOARD_REV      0x00 //2 bytes, little-endian (historic, don't blame me)
 #define USRP2_EE_MBOARD_MAC_ADDR 0x02 //6 bytes
+#define USRP2_EE_MBOARD_GATEWAY  0x38 //uint32, big-endian
+#define USRP2_EE_MBOARD_SUBNET   0x08 //uint32, big-endian
 #define USRP2_EE_MBOARD_IP_ADDR  0x0C //uint32, big-endian
 #define USRP2_EE_MBOARD_BOOTLOADER_FLAGS 0xF7
 

@@ -19,6 +19,7 @@
 #include <uhd/types/dict.hpp>
 #include <uhd/exception.hpp>
 #include <uhd/utils/msg.hpp>
+#include <uhd/utils/safe_call.hpp>
 #include <uhd/utils/algorithm.hpp>
 #include <boost/assign/list_of.hpp>
 #include <boost/thread/thread.hpp> //thread sleep
@@ -76,8 +77,17 @@ public:
         this->clear();
     }
 
+    ~rx_dsp_core_200_impl(void)
+    {
+        UHD_SAFE_CALL
+        (
+            //shutdown any possible streaming
+            this->clear();
+        )
+    }
+
     void clear(void){
-        _iface->poke32(REG_RX_CTRL_NCHANNELS, 1); //also reset
+        _iface->poke32(REG_RX_CTRL_NCHANNELS, 0); //also reset
         _iface->poke32(REG_RX_CTRL_VRT_HDR, 0
             | (0x1 << 28) //if data with stream id
             | (0x1 << 26) //has trailer
@@ -173,6 +183,15 @@ public:
         }
 
         _iface->poke32(REG_DSP_RX_DECIM, (hb1 << 9) | (hb0 << 8) | (decim & 0xff));
+
+        if (decim > 1 and hb0 == 0 and hb1 == 0)
+        {
+            UHD_MSG(warning) << boost::format(
+                "The requested decimation is odd; the user should expect CIC rolloff.\n"
+                "Select an even decimation to ensure that a halfband filter is enabled.\n"
+                "decimation = dsp_rate/samp_rate -> %d = (%f MHz)/(%f MHz)\n"
+            ) % decim_rate % (_tick_rate/1e6) % (rate/1e6);
+        }
 
         // Calculate CIC decimation (i.e., without halfband decimators)
         // Calculate closest multiplier constant to reverse gain absent scale multipliers

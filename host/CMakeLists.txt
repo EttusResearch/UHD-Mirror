@@ -123,9 +123,9 @@ SET(BOOST_REQUIRED_COMPONENTS
     unit_test_framework
 )
 
-IF(UNIX AND EXISTS "/usr/lib64")
+IF(UNIX AND NOT BOOST_ROOT AND EXISTS "/usr/lib64")
     LIST(APPEND BOOST_LIBRARYDIR "/usr/lib64") #fedora 64-bit fix
-ENDIF(UNIX AND EXISTS "/usr/lib64")
+ENDIF(UNIX AND NOT BOOST_ROOT AND EXISTS "/usr/lib64")
 
 IF(MSVC)
     SET(BOOST_ALL_DYN_LINK "${BOOST_ALL_DYN_LINK}" CACHE BOOL "boost enable dynamic linking")
@@ -195,6 +195,12 @@ INSTALL(FILES
 )
 
 ########################################################################
+# Images download directory for utils/uhd_images_downloader.py
+########################################################################
+
+SET(UHD_IMAGES_DOWNLOAD_SRC "http://files.ettus.com/binaries/maint_images/archive/uhd-images_003.005.001-release.zip")
+
+########################################################################
 # Register top level components
 ########################################################################
 LIBUHD_REGISTER_COMPONENT("LibUHD" ENABLE_LIBUHD ON "Boost_FOUND;HAVE_PYTHON_PLAT_MIN_VERSION;HAVE_PYTHON_MODULE_CHEETAH" OFF)
@@ -224,8 +230,6 @@ ENDIF(ENABLE_TESTS)
 IF(ENABLE_UTILS)
     ADD_SUBDIRECTORY(utils)
 ENDIF(ENABLE_UTILS)
-
-ADD_SUBDIRECTORY(usrp_e_utils)
 
 ########################################################################
 # Create Pkg Config File
@@ -278,3 +282,4 @@ ENDIF(DEFINED UHD_IMAGES_DIR AND EXISTS "${UHD_IMAGES_DIR}")
 UHD_PRINT_COMPONENT_SUMMARY()
 MESSAGE(STATUS "Building version: ${UHD_VERSION}")
 MESSAGE(STATUS "Using install prefix: ${CMAKE_INSTALL_PREFIX}")
+MESSAGE(STATUS "Compatible images can be downloaded from: ${UHD_IMAGES_DOWNLOAD_SRC}")

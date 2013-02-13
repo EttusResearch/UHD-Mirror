@@ -1,5 +1,5 @@
 //
-// Copyright 2010-2011 Ettus Research LLC
+// Copyright 2010-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@
 #define UHD_USRP_MULTI_USRP_COMMAND_TIME_API
 #define UHD_USRP_MULTI_USRP_BW_RANGE_API
 #define UHD_USRP_MULTI_USRP_USER_REGS_API
+#define UHD_USRP_MULTI_USRP_GET_USRP_INFO_API
 
 #include <uhd/config.hpp>
 #include <uhd/device.hpp>
@@ -130,6 +131,24 @@ public:
     tx_streamer::sptr get_tx_stream(const stream_args_t &args){
         return this->get_device()->get_tx_stream(args);
     }
+
+    /*!
+     * Returns identifying information about this USRP's configuration.
+     * Returns motherboard ID, name, and serial.
+     * Returns daughterboard RX ID, subdev name and spec, serial, and antenna.
+     * \param chan channel index 0 to N-1
+     * \return RX info
+     */
+    virtual dict<std::string, std::string> get_usrp_rx_info(size_t chan = 0) = 0;
+
+    /*!
+     * Returns identifying information about this USRP's configuration.
+     * Returns motherboard ID, name, and serial.
+     * Returns daughterboard TX ID, subdev name and spec, serial, and antenna.
+     * \param chan channel index 0 to N-1
+     * \return TX info
+     */
+     virtual dict<std::string, std::string> get_usrp_tx_info(size_t chan = 0) = 0;
 
     /*******************************************************************
      * Mboard methods
@@ -432,6 +451,13 @@ public:
     virtual freq_range_t get_rx_freq_range(size_t chan = 0) = 0;
 
     /*!
+     * Get the center frequency range of the RF frontend.
+     * \param chan the channel index 0 to N-1
+     * \return a frequency range object
+     */
+    virtual freq_range_t get_fe_rx_freq_range(size_t chan = 0) = 0;
+
+    /*!
      * Set the RX gain value for the specified gain element.
      * For an empty name, distribute across all gain elements.
      * \param gain the gain in dB
@@ -676,6 +702,13 @@ public:
      * \return a frequency range object
      */
     virtual freq_range_t get_tx_freq_range(size_t chan = 0) = 0;
+
+    /*!
+     * Get the center frequency range of the TX frontend.
+     * \param chan the channel index 0 to N-1
+     * \return a frequency range object
+     */
+    virtual freq_range_t get_fe_tx_freq_range(size_t chan = 0) = 0;
 
     /*!
      * Set the TX gain value for the specified gain element.

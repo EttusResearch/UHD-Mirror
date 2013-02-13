@@ -38,6 +38,8 @@
 #ifndef INCLUDED_USRP1_IMPL_HPP
 #define INCLUDED_USRP1_IMPL_HPP
 
+static const std::string USRP1_EEPROM_MAP_KEY = "B000";
+
 #define FR_RB_CAPS          3
 #define FR_MODE             13
 #define FR_DEBUG_EN         14
@@ -151,6 +153,8 @@ private:
     bool has_tx_halfband(void);
 
     void vandal_conquest_loop(void);
+
+    void set_reg(const std::pair<boost::uint8_t, boost::uint32_t> &reg);
 
     //handle the enables
     bool _rx_enabled, _tx_enabled;

@@ -368,8 +368,9 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
                 "\nPlease update the firmware and FPGA images for your device.\n"
                 "See the application notes for USRP2/N-Series for instructions.\n"
                 "Expected FPGA compatibility number %d, but got %d:\n"
-                "The FPGA build is not compatible with the host code build."
-            ) % int(USRP2_FPGA_COMPAT_NUM) % fpga_major));
+                "The FPGA build is not compatible with the host code build.\n"
+                "%s\n"
+            ) % int(USRP2_FPGA_COMPAT_NUM) % fpga_major % _mbc[mb].iface->images_warn_help_message()));
         }
         _tree->create<std::string>(mb_path / "fpga_version").set(str(boost::format("%u.%u") % fpga_major % fpga_minor));
 
@@ -391,8 +392,28 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         _mbc[mb].tx_dsp_xport = make_xport(
             addr, BOOST_STRINGIZE(USRP2_UDP_TX_DSP0_PORT), device_args_i, "send"
         );
+        UHD_LOG << "Making transport for Control..." << std::endl;
+        _mbc[mb].fifo_ctrl_xport = make_xport(
+            addr, BOOST_STRINGIZE(USRP2_UDP_FIFO_CRTL_PORT), device_addr_t(), ""
+        );
         //set the filter on the router to take dsp data from this port
-        _mbc[mb].iface->poke32(U2_REG_ROUTER_CTRL_PORTS, USRP2_UDP_TX_DSP0_PORT);
+        _mbc[mb].iface->poke32(U2_REG_ROUTER_CTRL_PORTS, (USRP2_UDP_FIFO_CRTL_PORT << 16) | USRP2_UDP_TX_DSP0_PORT);
+
+        //create the fifo control interface for high speed register access
+        _mbc[mb].fifo_ctrl = usrp2_fifo_ctrl::make(_mbc[mb].fifo_ctrl_xport);
+        switch(_mbc[mb].iface->get_rev()){
+        case usrp2_iface::USRP_N200:
+        case usrp2_iface::USRP_N210:
+        case usrp2_iface::USRP_N200_R4:
+        case usrp2_iface::USRP_N210_R4:
+            _mbc[mb].wbiface = _mbc[mb].fifo_ctrl;
+            _mbc[mb].spiface = _mbc[mb].fifo_ctrl;
+            break;
+        default:
+            _mbc[mb].wbiface = _mbc[mb].iface;
+            _mbc[mb].spiface = _mbc[mb].iface;
+            break;
+        }
 
         ////////////////////////////////////////////////////////////////
         // setup the mboard eeprom
@@ -404,7 +425,7 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         ////////////////////////////////////////////////////////////////
         // create clock control objects
         ////////////////////////////////////////////////////////////////
-        _mbc[mb].clock = usrp2_clock_ctrl::make(_mbc[mb].iface);
+        _mbc[mb].clock = usrp2_clock_ctrl::make(_mbc[mb].iface, _mbc[mb].spiface);
         _tree->create<double>(mb_path / "tick_rate")
             .publish(boost::bind(&usrp2_clock_ctrl::get_master_clock_rate, _mbc[mb].clock))
             .subscribe(boost::bind(&usrp2_impl::update_tick_rate, this, _1));
@@ -416,7 +437,7 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         const fs_path tx_codec_path = mb_path / "tx_codecs/A";
         _tree->create<int>(rx_codec_path / "gains"); //phony property so this dir exists
         _tree->create<int>(tx_codec_path / "gains"); //phony property so this dir exists
-        _mbc[mb].codec = usrp2_codec_ctrl::make(_mbc[mb].iface);
+        _mbc[mb].codec = usrp2_codec_ctrl::make(_mbc[mb].iface, _mbc[mb].spiface);
         switch(_mbc[mb].iface->get_rev()){
         case usrp2_iface::USRP_N200:
         case usrp2_iface::USRP_N210:
@@ -442,18 +463,47 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         }
         _tree->create<std::string>(tx_codec_path / "name").set("ad9777");
 
-        ////////////////////////////////////////////////////////////////
-        // create gpsdo control objects
-        ////////////////////////////////////////////////////////////////
-        if (_mbc[mb].iface->mb_eeprom["gpsdo"] == "internal"){
-            _mbc[mb].gps = gps_ctrl::make(udp_simple::make_uart(udp_simple::make_connected(
-                addr, BOOST_STRINGIZE(USRP2_UDP_UART_GPS_PORT)
-            )));
-            if(_mbc[mb].gps->gps_detected()) {
-                BOOST_FOREACH(const std::string &name, _mbc[mb].gps->get_sensors()){
+        ////////////////////////////////////////////////////////////////////
+        // Create the GPSDO control
+        ////////////////////////////////////////////////////////////////////
+        static const boost::uint32_t dont_look_for_gpsdo = 0x1234abcdul;
+
+        //disable check for internal GPSDO when not the following:
+        switch(_mbc[mb].iface->get_rev()){
+        case usrp2_iface::USRP_N200:
+        case usrp2_iface::USRP_N210:
+        case usrp2_iface::USRP_N200_R4:
+        case usrp2_iface::USRP_N210_R4:
+            break;
+        default:
+            _mbc[mb].iface->pokefw(U2_FW_REG_HAS_GPSDO, dont_look_for_gpsdo);
+        }
+
+        //otherwise if not disabled, look for the internal GPSDO
+        if (_mbc[mb].iface->peekfw(U2_FW_REG_HAS_GPSDO) != dont_look_for_gpsdo)
+        {
+            UHD_MSG(status) << "Detecting internal GPSDO.... " << std::flush;
+            try{
+                _mbc[mb].gps = gps_ctrl::make(udp_simple::make_uart(udp_simple::make_connected(
+                    addr, BOOST_STRINGIZE(USRP2_UDP_UART_GPS_PORT)
+                )));
+            }
+            catch(std::exception &e){
+                UHD_MSG(error) << "An error occurred making GPSDO control: " << e.what() << std::endl;
+            }
+            if (_mbc[mb].gps and _mbc[mb].gps->gps_detected())
+            {
+                UHD_MSG(status) << "found" << std::endl;
+                BOOST_FOREACH(const std::string &name, _mbc[mb].gps->get_sensors())
+                {
                     _tree->create<sensor_value_t>(mb_path / "sensors" / name)
                         .publish(boost::bind(&gps_ctrl::get_sensor, _mbc[mb].gps, name));
                 }
+            }
+            else
+            {
+                UHD_MSG(status) << "not found" << std::endl;
+                _mbc[mb].iface->pokefw(U2_FW_REG_HAS_GPSDO, dont_look_for_gpsdo);
             }
         }
 
@@ -469,10 +519,10 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         // create frontend control objects
         ////////////////////////////////////////////////////////////////
         _mbc[mb].rx_fe = rx_frontend_core_200::make(
-            _mbc[mb].iface, U2_REG_SR_ADDR(SR_RX_FRONT)
+            _mbc[mb].wbiface, U2_REG_SR_ADDR(SR_RX_FRONT)
         );
         _mbc[mb].tx_fe = tx_frontend_core_200::make(
-            _mbc[mb].iface, U2_REG_SR_ADDR(SR_TX_FRONT)
+            _mbc[mb].wbiface, U2_REG_SR_ADDR(SR_TX_FRONT)
         );
 
         _tree->create<subdev_spec_t>(mb_path / "rx_subdev_spec")
@@ -503,10 +553,10 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         // create rx dsp control objects
         ////////////////////////////////////////////////////////////////
         _mbc[mb].rx_dsps.push_back(rx_dsp_core_200::make(
-            _mbc[mb].iface, U2_REG_SR_ADDR(SR_RX_DSP0), U2_REG_SR_ADDR(SR_RX_CTRL0), USRP2_RX_SID_BASE + 0, true
+            _mbc[mb].wbiface, U2_REG_SR_ADDR(SR_RX_DSP0), U2_REG_SR_ADDR(SR_RX_CTRL0), USRP2_RX_SID_BASE + 0, true
         ));
         _mbc[mb].rx_dsps.push_back(rx_dsp_core_200::make(
-            _mbc[mb].iface, U2_REG_SR_ADDR(SR_RX_DSP1), U2_REG_SR_ADDR(SR_RX_CTRL1), USRP2_RX_SID_BASE + 1, true
+            _mbc[mb].wbiface, U2_REG_SR_ADDR(SR_RX_DSP1), U2_REG_SR_ADDR(SR_RX_CTRL1), USRP2_RX_SID_BASE + 1, true
         ));
         for (size_t dspno = 0; dspno < _mbc[mb].rx_dsps.size(); dspno++){
             _mbc[mb].rx_dsps[dspno]->set_link_rate(USRP2_LINK_RATE_BPS);
@@ -531,7 +581,7 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         // create tx dsp control objects
         ////////////////////////////////////////////////////////////////
         _mbc[mb].tx_dsp = tx_dsp_core_200::make(
-            _mbc[mb].iface, U2_REG_SR_ADDR(SR_TX_DSP), U2_REG_SR_ADDR(SR_TX_CTRL), USRP2_TX_ASYNC_SID
+            _mbc[mb].wbiface, U2_REG_SR_ADDR(SR_TX_DSP), U2_REG_SR_ADDR(SR_TX_CTRL), USRP2_TX_ASYNC_SID
         );
         _mbc[mb].tx_dsp->set_link_rate(USRP2_LINK_RATE_BPS);
         _tree->access<double>(mb_path / "tick_rate")
@@ -565,7 +615,7 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         time64_rb_bases.rb_hi_pps = U2_REG_TIME64_HI_RB_PPS;
         time64_rb_bases.rb_lo_pps = U2_REG_TIME64_LO_RB_PPS;
         _mbc[mb].time64 = time64_core_200::make(
-            _mbc[mb].iface, U2_REG_SR_ADDR(SR_TIME64), time64_rb_bases, mimo_clock_sync_delay_cycles
+            _mbc[mb].wbiface, U2_REG_SR_ADDR(SR_TIME64), time64_rb_bases, mimo_clock_sync_delay_cycles
         );
         _tree->access<double>(mb_path / "tick_rate")
             .subscribe(boost::bind(&time64_core_200::set_tick_rate, _mbc[mb].time64, _1));
@@ -583,13 +633,26 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         //setup reference source props
         _tree->create<std::string>(mb_path / "clock_source/value")
             .subscribe(boost::bind(&usrp2_impl::update_clock_source, this, mb, _1));
-        static const std::vector<std::string> clock_sources = boost::assign::list_of("internal")("external")("mimo");
+        std::vector<std::string> clock_sources = boost::assign::list_of("internal")("external")("mimo");
+        if (_mbc[mb].gps and _mbc[mb].gps->gps_detected()) clock_sources.push_back("gpsdo");
         _tree->create<std::vector<std::string> >(mb_path / "clock_source/options").set(clock_sources);
+        //plug timed commands into tree here
+        switch(_mbc[mb].iface->get_rev()){
+        case usrp2_iface::USRP_N200:
+        case usrp2_iface::USRP_N210:
+        case usrp2_iface::USRP_N200_R4:
+        case usrp2_iface::USRP_N210_R4:
+            _tree->create<time_spec_t>(mb_path / "time/cmd")
+                .subscribe(boost::bind(&usrp2_fifo_ctrl::set_time, _mbc[mb].fifo_ctrl, _1));
+        default: break; //otherwise, do not register
+        }
+        _tree->access<double>(mb_path / "tick_rate")
+            .subscribe(boost::bind(&usrp2_fifo_ctrl::set_tick_rate, _mbc[mb].fifo_ctrl, _1));
 
         ////////////////////////////////////////////////////////////////////
         // create user-defined control objects
         ////////////////////////////////////////////////////////////////////
-        _mbc[mb].user = user_settings_core_200::make(_mbc[mb].iface, U2_REG_SR_ADDR(SR_USER_REGS));
+        _mbc[mb].user = user_settings_core_200::make(_mbc[mb].wbiface, U2_REG_SR_ADDR(SR_USER_REGS));
         _tree->create<user_settings_core_200::user_reg_t>(mb_path / "user/regs")
             .subscribe(boost::bind(&user_settings_core_200::set_reg, _mbc[mb].user, _1));
 
@@ -603,6 +666,9 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         tx_db_eeprom.load(*_mbc[mb].iface, USRP2_I2C_ADDR_TX_DB);
         gdb_eeprom.load(*_mbc[mb].iface, USRP2_I2C_ADDR_TX_DB ^ 5);
 
+        //disable rx dc offset if LFRX
+        if (rx_db_eeprom.id == 0x000f) _tree->access<bool>(rx_fe_path / "dc_offset" / "enable").set(false);
+
         //create the properties and register subscribers
         _tree->create<dboard_eeprom_t>(mb_path / "dboards/A/rx_eeprom")
             .set(rx_db_eeprom)
@@ -615,7 +681,7 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
             .subscribe(boost::bind(&usrp2_impl::set_db_eeprom, this, mb, "gdb", _1));
 
         //create a new dboard interface and manager
-        _mbc[mb].dboard_iface = make_usrp2_dboard_iface(_mbc[mb].iface, _mbc[mb].clock);
+        _mbc[mb].dboard_iface = make_usrp2_dboard_iface(_mbc[mb].wbiface, _mbc[mb].iface/*i2c*/, _mbc[mb].spiface, _mbc[mb].clock);
         _tree->create<dboard_iface::sptr>(mb_path / "dboards/A/iface").set(_mbc[mb].dboard_iface);
         _mbc[mb].dboard_manager = dboard_manager::make(
             rx_db_eeprom.id, tx_db_eeprom.id, gdb_eeprom.id,
@@ -657,10 +723,11 @@ usrp2_impl::usrp2_impl(const device_addr_t &_device_addr){
         _tree->access<std::string>(root / "time_source/value").set("none");
 
         //GPS installed: use external ref, time, and init time spec
-        if (_mbc[mb].gps.get() and _mbc[mb].gps->gps_detected()){
+        if (_mbc[mb].gps and _mbc[mb].gps->gps_detected()){
+            _mbc[mb].time64->enable_gpsdo();
             UHD_MSG(status) << "Setting references to the internal GPSDO" << std::endl;
-            _tree->access<std::string>(root / "time_source/value").set("external");
-            _tree->access<std::string>(root / "clock_source/value").set("external");
+            _tree->access<std::string>(root / "time_source/value").set("gpsdo");
+            _tree->access<std::string>(root / "clock_source/value").set("gpsdo");
             UHD_MSG(status) << "Initializing time to the internal GPSDO" << std::endl;
             _mbc[mb].time64->set_time_next_pps(time_spec_t(time_t(_mbc[mb].gps->get_sensor("gps_time").to_int()+1)));
         }
@@ -675,7 +742,7 @@ usrp2_impl::~usrp2_impl(void){UHD_SAFE_CALL(
 )}
 
 void usrp2_impl::set_mb_eeprom(const std::string &mb, const uhd::usrp::mboard_eeprom_t &mb_eeprom){
-    mb_eeprom.commit(*(_mbc[mb].iface), mboard_eeprom_t::MAP_N100);
+    mb_eeprom.commit(*(_mbc[mb].iface), USRP2_EEPROM_MAP_KEY);
 }
 
 void usrp2_impl::set_db_eeprom(const std::string &mb, const std::string &type, const uhd::usrp::dboard_eeprom_t &db_eeprom){
@@ -685,12 +752,12 @@ void usrp2_impl::set_db_eeprom(const std::string &mb, const std::string &type, c
 }
 
 sensor_value_t usrp2_impl::get_mimo_locked(const std::string &mb){
-    const bool lock = (_mbc[mb].iface->peek32(U2_REG_IRQ_RB) & (1<<10)) != 0;
+    const bool lock = (_mbc[mb].wbiface->peek32(U2_REG_IRQ_RB) & (1<<10)) != 0;
     return sensor_value_t("MIMO", lock, "locked", "unlocked");
 }
 
 sensor_value_t usrp2_impl::get_ref_locked(const std::string &mb){
-    const bool lock = (_mbc[mb].iface->peek32(U2_REG_IRQ_RB) & (1<<11)) != 0;
+    const bool lock = (_mbc[mb].wbiface->peek32(U2_REG_IRQ_RB) & (1<<11)) != 0;
     return sensor_value_t("Ref", lock, "locked", "unlocked");
 }
 
@@ -729,14 +796,16 @@ meta_range_t usrp2_impl::get_tx_dsp_freq_range(const std::string &mb){
 }
 
 void usrp2_impl::update_clock_source(const std::string &mb, const std::string &source){
+    //NOTICE: U2_REG_MISC_CTRL_CLOCK is on the wb clock, and cannot be set from fifo_ctrl
     //clock source ref 10mhz
     switch(_mbc[mb].iface->get_rev()){
     case usrp2_iface::USRP_N200:
     case usrp2_iface::USRP_N210:
     case usrp2_iface::USRP_N200_R4:
     case usrp2_iface::USRP_N210_R4:
-        if (source == "internal")       _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x12);
+        if      (source == "internal")  _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x12);
         else if (source == "external")  _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x1C);
+        else if (source == "gpsdo")     _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x1C);
         else if (source == "mimo")      _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x15);
         else throw uhd::value_error("unhandled clock configuration reference source: " + source);
         _mbc[mb].clock->enable_external_ref(true); //USRP2P has an internal 10MHz TCXO
@@ -744,7 +813,7 @@ void usrp2_impl::update_clock_source(const std::string &mb, const std::string &s
 
     case usrp2_iface::USRP2_REV3:
     case usrp2_iface::USRP2_REV4:
-        if (source == "internal")       _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x10);
+        if      (source == "internal")  _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x10);
         else if (source == "external")  _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x1C);
         else if (source == "mimo")      _mbc[mb].iface->poke32(U2_REG_MISC_CTRL_CLOCK, 0x15);
         else throw uhd::value_error("unhandled clock configuration reference source: " + source);

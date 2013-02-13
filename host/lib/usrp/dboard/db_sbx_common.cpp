@@ -1,5 +1,5 @@
 //
-// Copyright 2011 Ettus Research LLC
+// Copyright 2011-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,7 +16,6 @@
 //
 
 #include "db_sbx_common.hpp"
-#include "adf4350_regs.hpp"
 
 using namespace uhd;
 using namespace uhd::usrp;
@@ -127,7 +126,10 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
     ////////////////////////////////////////////////////////////////////
     // Register RX properties
     ////////////////////////////////////////////////////////////////////
-    this->get_rx_subtree()->create<std::string>("name").set("SBX RX");
+    if(get_rx_id() == 0x054) this->get_rx_subtree()->create<std::string>("name").set("SBXv3 RX");
+    else if(get_rx_id() == 0x065) this->get_rx_subtree()->create<std::string>("name").set("SBXv4 RX");
+    else this->get_rx_subtree()->create<std::string>("name").set("SBX RX");
+
     this->get_rx_subtree()->create<sensor_value_t>("sensors/lo_locked")
         .publish(boost::bind(&sbx_xcvr::get_locked, this, dboard_iface::UNIT_RX));
     BOOST_FOREACH(const std::string &name, sbx_rx_gain_ranges.keys()){
@@ -156,7 +158,10 @@ sbx_xcvr::sbx_xcvr(ctor_args_t args) : xcvr_dboard_base(args){
     ////////////////////////////////////////////////////////////////////
     // Register TX properties
     ////////////////////////////////////////////////////////////////////
-    this->get_tx_subtree()->create<std::string>("name").set("SBX TX");
+    if(get_tx_id() == 0x055) this->get_tx_subtree()->create<std::string>("name").set("SBXv3 TX");
+    else if(get_tx_id() == 0x067) this->get_tx_subtree()->create<std::string>("name").set("SBXv4 TX");
+    else this->get_tx_subtree()->create<std::string>("name").set("SBX TX");
+
     this->get_tx_subtree()->create<sensor_value_t>("sensors/lo_locked")
         .publish(boost::bind(&sbx_xcvr::get_locked, this, dboard_iface::UNIT_TX));
     BOOST_FOREACH(const std::string &name, sbx_tx_gain_ranges.keys()){
@@ -213,8 +218,8 @@ void sbx_xcvr::update_atr(void){
     int tx_pga0_iobits = tx_pga0_gain_to_iobits(_tx_gains["PGA0"]);
     int rx_lo_lpf_en = (_rx_lo_freq == sbx_enable_rx_lo_filter.clip(_rx_lo_freq)) ? LO_LPF_EN : 0;
     int tx_lo_lpf_en = (_tx_lo_freq == sbx_enable_tx_lo_filter.clip(_tx_lo_freq)) ? LO_LPF_EN : 0;
-    int rx_ld_led = get_locked(dboard_iface::UNIT_RX).to_bool() ? 0 : RX_LED_LD;
-    int tx_ld_led = get_locked(dboard_iface::UNIT_TX).to_bool() ? 0 : TX_LED_LD;
+    int rx_ld_led = _rx_lo_lock_cache ? 0 : RX_LED_LD;
+    int tx_ld_led = _tx_lo_lock_cache ? 0 : TX_LED_LD;
     int rx_ant_led = _rx_ant == "TX/RX" ? RX_LED_RX1RX2 : 0;
     int tx_ant_led = _tx_ant == "TX/RX" ? 0 : TX_LED_TXRX;
 
@@ -283,8 +288,14 @@ void sbx_xcvr::set_tx_ant(const std::string &ant){
  **********************************************************************/
 double sbx_xcvr::set_lo_freq(dboard_iface::unit_t unit, double target_freq) {
     const double actual = db_actual->set_lo_freq(unit, target_freq);
-    if (unit == dboard_iface::UNIT_RX) _rx_lo_freq = actual;
-    if (unit == dboard_iface::UNIT_TX) _tx_lo_freq = actual;
+    if (unit == dboard_iface::UNIT_RX){
+        _rx_lo_lock_cache = false;
+        _rx_lo_freq = actual;
+    }
+    if (unit == dboard_iface::UNIT_TX){
+        _tx_lo_lock_cache = false;
+        _tx_lo_freq = actual;
+    }
     update_atr();
     return actual;
 }
@@ -292,6 +303,13 @@ double sbx_xcvr::set_lo_freq(dboard_iface::unit_t unit, double target_freq) {
 
 sensor_value_t sbx_xcvr::get_locked(dboard_iface::unit_t unit) {
     const bool locked = (this->get_iface()->read_gpio(unit) & LOCKDET_MASK) != 0;
+
+    if (unit == dboard_iface::UNIT_RX) _rx_lo_lock_cache = locked;
+    if (unit == dboard_iface::UNIT_TX) _tx_lo_lock_cache = locked;
+
+    //write the new lock cache setting to atr regs
+    update_atr();
+
     return sensor_value_t("LO", locked, "locked", "unlocked");
 }
 

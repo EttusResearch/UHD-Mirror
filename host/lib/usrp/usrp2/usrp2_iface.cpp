@@ -1,5 +1,5 @@
 //
-// Copyright 2010-2011 Ettus Research LLC
+// Copyright 2010-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,11 +16,13 @@
 //
 
 #include "usrp2_regs.hpp"
+#include "usrp2_impl.hpp"
 #include "fw_common.h"
 #include "usrp2_iface.hpp"
 #include <uhd/exception.hpp>
 #include <uhd/utils/msg.hpp>
 #include <uhd/utils/tasks.hpp>
+#include <uhd/utils/images.hpp>
 #include <uhd/utils/safe_call.hpp>
 #include <uhd/types/dict.hpp>
 #include <boost/thread.hpp>
@@ -31,12 +33,14 @@
 #include <boost/bind.hpp>
 #include <boost/tokenizer.hpp>
 #include <boost/functional/hash.hpp>
+#include <boost/filesystem.hpp>
 #include <algorithm>
 #include <iostream>
 
 using namespace uhd;
 using namespace uhd::usrp;
 using namespace uhd::transport;
+namespace fs = boost::filesystem;
 
 static const double CTRL_RECV_TIMEOUT = 1.0;
 static const size_t CTRL_RECV_RETRIES = 3;
@@ -105,7 +109,7 @@ public:
             throw uhd::runtime_error("firmware not responding");
         _protocol_compat = ntohl(ctrl_data.proto_ver);
 
-        mb_eeprom = mboard_eeprom_t(*this, mboard_eeprom_t::MAP_N100);
+        mb_eeprom = mboard_eeprom_t(*this, USRP2_EEPROM_MAP_KEY);
         if (this->get_rev() == USRP_NXXX){
             throw uhd::runtime_error("operation borked with code 12, contact support@ettus.com");
         }
@@ -121,12 +125,12 @@ public:
 
     void lock_device(bool lock){
         if (lock){
-            this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_POKE32>(U2_FW_REG_LOCK_GPID, boost::uint32_t(get_gpid()));
+            this->pokefw(U2_FW_REG_LOCK_GPID, boost::uint32_t(get_gpid()));
             _lock_task = task::make(boost::bind(&usrp2_iface_impl::lock_task, this));
         }
         else{
             _lock_task.reset(); //shutdown the task
-            this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_POKE32>(U2_FW_REG_LOCK_TIME, 0); //unlock
+            this->pokefw(U2_FW_REG_LOCK_TIME, 0); //unlock
         }
     }
 
@@ -134,8 +138,8 @@ public:
         //never assume lock with fpga image mismatch
         if ((this->peek32(U2_REG_COMPAT_NUM_RB) >> 16) != USRP2_FPGA_COMPAT_NUM) return false;
 
-        boost::uint32_t lock_time = this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_PEEK32>(U2_FW_REG_LOCK_TIME);
-        boost::uint32_t lock_gpid = this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_PEEK32>(U2_FW_REG_LOCK_GPID);
+        boost::uint32_t lock_time = this->peekfw(U2_FW_REG_LOCK_TIME);
+        boost::uint32_t lock_gpid = this->peekfw(U2_FW_REG_LOCK_GPID);
 
         //may not be the right tick rate, but this is ok for locking purposes
         const boost::uint32_t lock_timeout_time = boost::uint32_t(3*100e6);
@@ -151,7 +155,7 @@ public:
 
     void lock_task(void){
         //re-lock in task
-        this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_POKE32>(U2_FW_REG_LOCK_TIME, this->get_curr_time());
+        this->pokefw(U2_FW_REG_LOCK_TIME, this->get_curr_time());
         //sleep for a bit
         boost::this_thread::sleep(boost::posix_time::milliseconds(1500));
     }
@@ -177,6 +181,16 @@ public:
 
     boost::uint16_t peek16(wb_addr_type addr){
         return this->get_reg<boost::uint16_t, USRP2_REG_ACTION_FPGA_PEEK16>(addr);
+    }
+
+    void pokefw(wb_addr_type addr, boost::uint32_t data)
+    {
+        this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_POKE32>(addr, data);
+    }
+
+    boost::uint32_t peekfw(wb_addr_type addr)
+    {
+        return this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_PEEK32>(addr);
     }
 
     template <class T, usrp2_reg_action_t action>
@@ -314,8 +328,10 @@ public:
                     "\nPlease update the firmware and FPGA images for your device.\n"
                     "See the application notes for USRP2/N-Series for instructions.\n"
                     "Expected protocol compatibility number %s, but got %d:\n"
-                    "The firmware build is not compatible with the host code build."
-                ) % ((lo == hi)? (boost::format("%d") % hi) : (boost::format("[%d to %d]") % lo % hi)) % compat));
+                    "The firmware build is not compatible with the host code build.\n"
+                    "%s\n"
+                ) % ((lo == hi)? (boost::format("%d") % hi) : (boost::format("[%d to %d]") % lo % hi))
+                  % compat % this->images_warn_help_message()));
             }
             if (len >= sizeof(usrp2_ctrl_data_t) and ntohl(ctrl_data_in->seq) == _ctrl_seq_num){
                 return *ctrl_data_in;
@@ -343,13 +359,13 @@ public:
 
     const std::string get_cname(void){
         switch(this->get_rev()){
-        case USRP2_REV3: return "USRP2-REV3";
-        case USRP2_REV4: return "USRP2-REV4";
-        case USRP_N200: return "USRP-N200";
-        case USRP_N210: return "USRP-N210";
-        case USRP_N200_R4: return "USRP-N200-REV4";
-        case USRP_N210_R4: return "USRP-N210-REV4";
-        case USRP_NXXX: return "USRP-N???";
+        case USRP2_REV3: return "USRP2 r3";
+        case USRP2_REV4: return "USRP2 r4";
+        case USRP_N200: return "N200";
+        case USRP_N210: return "N210";
+        case USRP_N200_R4: return "N200r4";
+        case USRP_N210_R4: return "N210r4";
+        case USRP_NXXX: return "N???";
         }
         UHD_THROW_INVALID_CODE_PATH();
     }
@@ -357,6 +373,58 @@ public:
     const std::string get_fw_version_string(void){
         boost::uint32_t minor = this->get_reg<boost::uint32_t, USRP2_REG_ACTION_FW_PEEK32>(U2_FW_REG_VER_MINOR);
         return str(boost::format("%u.%u") % _protocol_compat % minor);
+    }
+
+    std::string images_warn_help_message(void){
+        //determine the images names
+        std::string fw_image, fpga_image;
+        switch(this->get_rev()){
+        case USRP2_REV3:   fpga_image = "usrp2_fpga.bin";        fw_image = "usrp2_fw.bin";     break;
+        case USRP2_REV4:   fpga_image = "usrp2_fpga.bin";        fw_image = "usrp2_fw.bin";     break;
+        case USRP_N200:    fpga_image = "usrp_n200_r2_fpga.bin"; fw_image = "usrp_n200_fw.bin"; break;
+        case USRP_N210:    fpga_image = "usrp_n210_r2_fpga.bin"; fw_image = "usrp_n210_fw.bin"; break;
+        case USRP_N200_R4: fpga_image = "usrp_n200_r4_fpga.bin"; fw_image = "usrp_n200_fw.bin"; break;
+        case USRP_N210_R4: fpga_image = "usrp_n210_r4_fpga.bin"; fw_image = "usrp_n210_fw.bin"; break;
+        default: break;
+        }
+        if (fw_image.empty() or fpga_image.empty()) return "";
+
+        //does your platform use sudo?
+        std::string sudo;
+        #if defined(UHD_PLATFORM_LINUX) || defined(UHD_PLATFORM_MACOS)
+            sudo = "sudo ";
+        #endif
+
+
+        //look up the real FS path to the images
+        std::string fw_image_path, fpga_image_path;
+        try{
+            fw_image_path = uhd::find_image_path(fw_image);
+            fpga_image_path = uhd::find_image_path(fpga_image);
+        }
+        catch(const std::exception &){
+            return str(boost::format("Could not find %s and %s in your images path!\n%s") % fw_image % fpga_image % print_images_error());
+        }
+
+        //escape char for multi-line cmd + newline + indent?
+        #ifdef UHD_PLATFORM_WIN32
+            const std::string ml = "^\n    ";
+        #else
+            const std::string ml = "\\\n    ";
+        #endif
+
+        //create the burner commands
+        if (this->get_rev() == USRP2_REV3 or this->get_rev() == USRP2_REV4){
+            const std::string card_burner = (fs::path(fw_image_path).branch_path().branch_path() / "utils" / "usrp2_card_burner.py").string();
+            const std::string card_burner_cmd = str(boost::format("\"%s%s\" %s--fpga=\"%s\" %s--fw=\"%s\"") % sudo % card_burner % ml % fpga_image_path % ml % fw_image_path);
+            return str(boost::format("%s\n%s") % print_images_error() % card_burner_cmd);
+        }
+        else{
+            const std::string addr = _ctrl_transport->get_recv_addr();
+            const std::string net_burner_path = (fs::path(fw_image_path).branch_path().branch_path() / "utils" / "usrp_n2xx_simple_net_burner").string();
+            const std::string net_burner_cmd = str(boost::format("\"%s\" %s--addr=\"%s\"") % net_burner_path % ml % addr);
+            return str(boost::format("%s\n%s") % print_images_error() % net_burner_cmd);
+        }
     }
 
 private:

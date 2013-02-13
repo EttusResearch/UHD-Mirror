@@ -1,5 +1,5 @@
 //
-// Copyright 2011 Ettus Research LLC
+// Copyright 2011-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -75,7 +75,6 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     if(ref_freq <= 12.5e6) D = adf4350_regs_t::REFERENCE_DOUBLER_ENABLED;
 
     //increase RF divider until acceptable VCO frequency
-    //start with target_freq*2 because mixer has divide by 2
     double vco_freq = target_freq;
     while (vco_freq < 2.2e9) {
         vco_freq *= 2;
@@ -83,7 +82,7 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     }
 
     //use 8/9 prescaler for vco_freq > 3 GHz (pg.18 prescaler)
-    adf4350_regs_t::prescaler_t prescaler = vco_freq > 3e9 ? adf4350_regs_t::PRESCALER_8_9 : adf4350_regs_t::PRESCALER_4_5;
+    adf4350_regs_t::prescaler_t prescaler = target_freq > 3e9 ? adf4350_regs_t::PRESCALER_8_9 : adf4350_regs_t::PRESCALER_4_5;
 
     /*
      * The goal here is to loop though possible R dividers,
@@ -91,7 +90,7 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
      * (frac) dividers.
      *
      * Calculate the N and F dividers for each set of values.
-     * The loop exists when it meets all of the constraints.
+     * The loop exits when it meets all of the constraints.
      * The resulting loop values are loaded into the registers.
      *
      * from pg.21
@@ -110,7 +109,7 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
         if (pfd_freq > 25e6) continue;
 
         //ignore fractional part of tuning
-        N = int(std::floor(vco_freq/pfd_freq));
+        N = int(std::floor(target_freq/pfd_freq));
 
         //keep N > minimum int divider requirement
         if (N < prescaler_to_min_int_div[prescaler]) continue;
@@ -125,7 +124,7 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
 
     //Fractional-N calculation
     MOD = 4095; //max fractional accuracy
-    FRAC = int((vco_freq/pfd_freq - N)*MOD);
+    FRAC = int((target_freq/pfd_freq - N)*MOD);
 
     //Reference divide-by-2 for 50% duty cycle
     // if R even, move one divide by 2 to to regs.reference_divide_by_2
@@ -135,12 +134,12 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     }
 
     //actual frequency calculation
-    actual_freq = double((N + (double(FRAC)/double(MOD)))*ref_freq*(1+int(D))/(R*(1+int(T)))/RFdiv);
+    actual_freq = double((N + (double(FRAC)/double(MOD)))*ref_freq*(1+int(D))/(R*(1+int(T))));
 
     UHD_LOGV(often)
         << boost::format("SBX Intermediates: ref=%0.2f, outdiv=%f, fbdiv=%f") % (ref_freq*(1+int(D))/(R*(1+int(T)))) % double(RFdiv*2) % double(N + double(FRAC)/double(MOD)) << std::endl
-        << boost::format("SBX tune: R=%d, BS=%d, N=%d, FRAC=%d, MOD=%d, T=%d, D=%d, RFdiv=%d, LD=%s"
-            ) % R % BS % N % FRAC % MOD % T % D % RFdiv % self_base->get_locked(unit).to_pp_string() << std::endl
+        << boost::format("SBX tune: R=%d, BS=%d, N=%d, FRAC=%d, MOD=%d, T=%d, D=%d, RFdiv=%d"
+            ) % R % BS % N % FRAC % MOD % T % D % RFdiv << std::endl
         << boost::format("SBX Frequencies (MHz): REQ=%0.2f, ACT=%0.2f, VCO=%0.2f, PFD=%0.2f, BAND=%0.2f"
             ) % (target_freq/1e6) % (actual_freq/1e6) % (vco_freq/1e6) % (pfd_freq/1e6) % (pfd_freq/BS/1e6) << std::endl;
 
@@ -155,6 +154,9 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     regs.frac_12_bit = FRAC;
     regs.int_16_bit = N;
     regs.mod_12_bit = MOD;
+    regs.clock_divider_12_bit = std::max(1, int(std::ceil(400e-6*pfd_freq/MOD)));
+    regs.feedback_select = adf4350_regs_t::FEEDBACK_SELECT_DIVIDED;
+    regs.clock_div_mode = adf4350_regs_t::CLOCK_DIV_MODE_RESYNC_ENABLE;
     regs.prescaler = prescaler;
     regs.r_counter_10_bit = R;
     regs.reference_divide_by_2 = T;
@@ -162,6 +164,11 @@ double sbx_xcvr::sbx_version3::set_lo_freq(dboard_iface::unit_t unit, double tar
     regs.band_select_clock_div = BS;
     UHD_ASSERT_THROW(rfdivsel_to_enum.has_key(RFdiv));
     regs.rf_divider_select = rfdivsel_to_enum[RFdiv];
+
+    //reset the N and R counter
+    regs.counter_reset = adf4350_regs_t::COUNTER_RESET_ENABLED;
+    self_base->get_iface()->write_spi(unit, spi_config_t::EDGE_RISE, regs.get_reg(2), 32);
+    regs.counter_reset = adf4350_regs_t::COUNTER_RESET_DISABLED;
 
     //write the registers
     //correct power-up sequence to write registers (5, 4, 3, 2, 1, 0)

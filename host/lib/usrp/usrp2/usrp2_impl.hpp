@@ -18,7 +18,9 @@
 #ifndef INCLUDED_USRP2_IMPL_HPP
 #define INCLUDED_USRP2_IMPL_HPP
 
+#include "gpio_core_200.hpp"
 #include "usrp2_iface.hpp"
+#include "usrp2_fifo_ctrl.hpp"
 #include "clock_ctrl.hpp"
 #include "codec_ctrl.hpp"
 #include "rx_frontend_core_200.hpp"
@@ -51,15 +53,13 @@ static const size_t mimo_clock_sync_delay_cycles = 138;
 static const size_t USRP2_SRAM_BYTES = size_t(1 << 20);
 static const boost::uint32_t USRP2_TX_ASYNC_SID = 2;
 static const boost::uint32_t USRP2_RX_SID_BASE = 3;
+static const std::string USRP2_EEPROM_MAP_KEY = "N100";
 
-/*!
- * Make a usrp2 dboard interface.
- * \param iface the usrp2 interface object
- * \param clk_ctrl the clock control object
- * \return a sptr to a new dboard interface
- */
+//! Make a usrp2 dboard interface.
 uhd::usrp::dboard_iface::sptr make_usrp2_dboard_iface(
-    usrp2_iface::sptr iface,
+    wb_iface::sptr wb_iface,
+    uhd::i2c_iface::sptr i2c_iface,
+    uhd::spi_iface::sptr spi_iface,
     usrp2_clock_ctrl::sptr clk_ctrl
 );
 
@@ -82,6 +82,9 @@ private:
     uhd::property_tree::sptr _tree;
     struct mb_container_type{
         usrp2_iface::sptr iface;
+        usrp2_fifo_ctrl::sptr fifo_ctrl;
+        uhd::spi_iface::sptr spiface;
+        wb_iface::sptr wbiface;
         usrp2_clock_ctrl::sptr clock;
         usrp2_codec_ctrl::sptr codec;
         uhd::gps_ctrl::sptr gps;
@@ -95,6 +98,7 @@ private:
         user_settings_core_200::sptr user;
         std::vector<uhd::transport::zero_copy_if::sptr> rx_dsp_xports;
         uhd::transport::zero_copy_if::sptr tx_dsp_xport;
+        uhd::transport::zero_copy_if::sptr fifo_ctrl_xport;
         uhd::usrp::dboard_manager::sptr dboard_manager;
         uhd::usrp::dboard_iface::sptr dboard_iface;
         size_t rx_chan_occ, tx_chan_occ;
@@ -129,6 +133,7 @@ private:
     double set_tx_dsp_freq(const std::string &, const double);
     uhd::meta_range_t get_tx_dsp_freq_range(const std::string &);
     void update_clock_source(const std::string &, const std::string &);
+    void program_stream_dest(uhd::transport::zero_copy_if::sptr &, const uhd::stream_args_t &);
 };
 
 #endif /* INCLUDED_USRP2_IMPL_HPP */

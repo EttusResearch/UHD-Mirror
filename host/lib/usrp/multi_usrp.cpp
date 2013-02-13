@@ -1,5 +1,5 @@
 //
-// Copyright 2010-2011 Ettus Research LLC
+// Copyright 2010-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -21,6 +21,10 @@
 #include <uhd/exception.hpp>
 #include <uhd/utils/msg.hpp>
 #include <uhd/utils/gain_group.hpp>
+#include <uhd/usrp/dboard_id.hpp>
+#include <uhd/usrp/mboard_eeprom.hpp>
+#include <uhd/usrp/dboard_eeprom.hpp>
+#include <boost/assign/list_of.hpp>
 #include <boost/thread.hpp>
 #include <boost/foreach.hpp>
 #include <boost/format.hpp>
@@ -125,6 +129,9 @@ static tune_result_t tune_xx_subdev_and_dsp(
     //------------------------------------------------------------------
     double lo_offset = 0.0;
     if (rf_fe_subtree->access<bool>("use_lo_offset").get()){
+        //If the frontend has lo_offset value and range properties, trust it for lo_offset
+        if (rf_fe_subtree->exists("lo_offset/value")) lo_offset = rf_fe_subtree->access<double>("lo_offset/value").get();
+
         //If the local oscillator will be in the passband, use an offset.
         //But constrain the LO offset by the width of the filter bandwidth.
         const double rate = dsp_subtree->access<double>("rate/value").get();
@@ -143,6 +150,14 @@ static tune_result_t tune_xx_subdev_and_dsp(
         break;
 
     case tune_request_t::POLICY_MANUAL:
+        //If the rf_fe understands lo_offset settings, infer the desired lo_offset and set it
+        //  Side effect: In TVRX2 for example, after setting the lo_offset (if_freq) with a
+        //  POLICY_MANUAL, there is no way for the user to automatically get back to default
+        //  if_freq without deconstruct/reconstruct the rf_fe objects.
+        if (rf_fe_subtree->exists("lo_offset/value")) {
+            rf_fe_subtree->access<double>("lo_offset/value").set(tune_request.rf_freq - tune_request.target_freq);
+        }
+
         target_rf_freq = tune_request.rf_freq;
         rf_fe_subtree->access<double>("freq/value").set(target_rf_freq);
         break;
@@ -212,6 +227,44 @@ public:
 
     device::sptr get_device(void){
         return _dev;
+    }
+
+    dict<std::string, std::string> get_usrp_rx_info(size_t chan){
+        mboard_chan_pair mcp = rx_chan_to_mcp(chan);
+        dict<std::string, std::string> usrp_info;
+
+        mboard_eeprom_t mb_eeprom = _tree->access<mboard_eeprom_t>(mb_root(mcp.mboard) / "eeprom").get();
+        dboard_eeprom_t db_eeprom = _tree->access<dboard_eeprom_t>(rx_rf_fe_root(mcp.chan).branch_path().branch_path() / "rx_eeprom").get();
+
+        usrp_info["mboard_id"] = _tree->access<std::string>(mb_root(mcp.mboard) / "name").get();
+        usrp_info["mboard_name"] = mb_eeprom["name"];
+        usrp_info["mboard_serial"] = mb_eeprom["serial"];
+        usrp_info["rx_id"] = db_eeprom.id.to_pp_string();
+        usrp_info["rx_subdev_name"] = _tree->access<std::string>(rx_rf_fe_root(mcp.chan) / "name").get();
+        usrp_info["rx_subdev_spec"] = _tree->access<subdev_spec_t>(mb_root(mcp.mboard) / "rx_subdev_spec").get().to_string();
+        usrp_info["rx_serial"] = db_eeprom.serial;
+        usrp_info["rx_antenna"] =  _tree->access<std::string>(rx_rf_fe_root(mcp.chan) / "antenna" / "value").get();
+
+        return usrp_info;
+    }
+
+    dict<std::string, std::string> get_usrp_tx_info(size_t chan){
+        mboard_chan_pair mcp = tx_chan_to_mcp(chan);
+        dict<std::string, std::string> usrp_info;
+
+        mboard_eeprom_t mb_eeprom = _tree->access<mboard_eeprom_t>(mb_root(mcp.mboard) / "eeprom").get();
+        dboard_eeprom_t db_eeprom = _tree->access<dboard_eeprom_t>(tx_rf_fe_root(mcp.chan).branch_path().branch_path() / "tx_eeprom").get();
+
+        usrp_info["mboard_id"] = _tree->access<std::string>(mb_root(mcp.mboard) / "name").get();
+        usrp_info["mboard_name"] = mb_eeprom["name"];
+        usrp_info["mboard_serial"] = mb_eeprom["serial"];
+        usrp_info["tx_id"] = db_eeprom.id.to_pp_string();
+        usrp_info["tx_subdev_name"] = _tree->access<std::string>(tx_rf_fe_root(mcp.chan) / "name").get();
+        usrp_info["tx_subdev_spec"] = _tree->access<subdev_spec_t>(mb_root(mcp.mboard) / "tx_subdev_spec").get().to_string();
+        usrp_info["tx_serial"] = db_eeprom.serial;
+        usrp_info["tx_antenna"] = _tree->access<std::string>(tx_rf_fe_root(mcp.chan) / "antenna" / "value").get();
+
+        return usrp_info;
     }
 
     /*******************************************************************
@@ -356,12 +409,27 @@ public:
         return true;
     }
 
-    void set_command_time(const time_spec_t &, size_t){
-        throw uhd::not_implemented_error("Not implemented yet, but we have a very good idea of how to do it.");
+    void set_command_time(const time_spec_t &time_spec, size_t mboard){
+        if (mboard != ALL_MBOARDS){
+            if (not _tree->exists(mb_root(mboard) / "time/cmd")){
+                throw uhd::not_implemented_error("timed command feature not implemented on this hardware");
+            }
+            _tree->access<time_spec_t>(mb_root(mboard) / "time/cmd").set(time_spec);
+            return;
+        }
+        for (size_t m = 0; m < get_num_mboards(); m++){
+            set_command_time(time_spec, m);
+        }
     }
 
-    void clear_command_time(size_t){
-        throw uhd::not_implemented_error("Not implemented yet, but we have a very good idea of how to do it.");
+    void clear_command_time(size_t mboard){
+        if (mboard != ALL_MBOARDS){
+            _tree->access<time_spec_t>(mb_root(mboard) / "time/cmd").set(time_spec_t(0.0));
+            return;
+        }
+        for (size_t m = 0; m < get_num_mboards(); m++){
+            clear_command_time(m);
+        }
     }
 
     void issue_stream_cmd(const stream_cmd_t &stream_cmd, size_t chan){
@@ -522,6 +590,10 @@ public:
         );
     }
 
+    freq_range_t get_fe_rx_freq_range(size_t chan){
+        return _tree->access<meta_range_t>(rx_rf_fe_root(chan) / "freq" / "range").get();
+    }
+
     void set_rx_gain(double gain, const std::string &name, size_t chan){
         return rx_gain_group(chan)->set_value(gain, name);
     }
@@ -621,16 +693,16 @@ public:
         return _tree->access<subdev_spec_t>(mb_root(mboard) / "tx_subdev_spec").get();
     }
 
-    std::string get_tx_subdev_name(size_t chan){
-        return _tree->access<std::string>(tx_rf_fe_root(chan) / "name").get();
-    }
-
     size_t get_tx_num_channels(void){
         size_t sum = 0;
         for (size_t m = 0; m < get_num_mboards(); m++){
             sum += get_tx_subdev_spec(m).size();
         }
         return sum;
+    }
+
+    std::string get_tx_subdev_name(size_t chan){
+        return _tree->access<std::string>(tx_rf_fe_root(chan) / "name").get();
     }
 
     void set_tx_rate(double rate, size_t chan){
@@ -668,6 +740,10 @@ public:
             _tree->access<meta_range_t>(tx_dsp_root(chan) / "freq" / "range").get(),
             this->get_tx_bandwidth(chan)
         );
+    }
+
+    freq_range_t get_fe_tx_freq_range(size_t chan){
+        return _tree->access<meta_range_t>(tx_rf_fe_root(chan) / "freq" / "range").get();
     }
 
     void set_tx_gain(double gain, const std::string &name, size_t chan){
@@ -832,7 +908,7 @@ private:
         const subdev_spec_pair_t spec = get_tx_subdev_spec(mcp.mboard).at(mcp.chan);
         gain_group::sptr gg = gain_group::make();
         BOOST_FOREACH(const std::string &name, _tree->list(mb_root(mcp.mboard) / "tx_codecs" / spec.db_name / "gains")){
-            gg->register_fcns("ADC-"+name, make_gain_fcns_from_subtree(_tree->subtree(mb_root(mcp.mboard) / "tx_codecs" / spec.db_name / "gains" / name)), 1 /* high prio */);
+            gg->register_fcns("DAC-"+name, make_gain_fcns_from_subtree(_tree->subtree(mb_root(mcp.mboard) / "tx_codecs" / spec.db_name / "gains" / name)), 1 /* high prio */);
         }
         BOOST_FOREACH(const std::string &name, _tree->list(tx_rf_fe_root(chan) / "gains")){
             gg->register_fcns(name, make_gain_fcns_from_subtree(_tree->subtree(tx_rf_fe_root(chan) / "gains" / name)), 0 /* low prio */);

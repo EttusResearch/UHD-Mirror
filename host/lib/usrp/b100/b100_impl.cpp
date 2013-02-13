@@ -17,9 +17,8 @@
 
 #include "apply_corrections.hpp"
 #include "b100_impl.hpp"
-#include "b100_ctrl.hpp"
+#include "b100_regs.hpp"
 #include <uhd/transport/usb_control.hpp>
-#include "ctrl_packet.hpp"
 #include <uhd/utils/msg.hpp>
 #include <uhd/exception.hpp>
 #include <uhd/utils/static.hpp>
@@ -30,8 +29,8 @@
 #include <boost/filesystem.hpp>
 #include <boost/thread/thread.hpp>
 #include <boost/lexical_cast.hpp>
-#include "b100_regs.hpp"
 #include <cstdio>
+#include <iostream>
 
 using namespace uhd;
 using namespace uhd::usrp;
@@ -82,13 +81,10 @@ static device_addrs_t b100_find(const device_addr_t &hint)
             b100_fw_image = find_image_path(hint.get("fw", B100_FW_FILE_NAME));
         }
         catch(...){
-            UHD_MSG(warning) << boost::format(
-                "Could not locate B100 firmware.\n"
-                "Please install the images package.\n"
-            );
+            UHD_MSG(warning) << boost::format("Could not locate B100 firmware. %s\n") % print_images_error();
             return b100_addrs;
         }
-        UHD_LOG << "the  firmware image: " << b100_fw_image << std::endl;
+        UHD_LOG << "the firmware image: " << b100_fw_image << std::endl;
 
         usb_control::sptr control;
         try{control = usb_control::make(handle, 0);}
@@ -114,7 +110,7 @@ static device_addrs_t b100_find(const device_addr_t &hint)
             catch(const uhd::exception &){continue;} //ignore claimed
 
             fx2_ctrl::sptr fx2_ctrl = fx2_ctrl::make(control);
-            const mboard_eeprom_t mb_eeprom = mboard_eeprom_t(*fx2_ctrl, mboard_eeprom_t::MAP_B100);
+            const mboard_eeprom_t mb_eeprom = mboard_eeprom_t(*fx2_ctrl, B100_EEPROM_MAP_KEY);
             device_addr_t new_addr;
             new_addr["type"] = "b100";
             new_addr["name"] = mb_eeprom["name"];
@@ -187,10 +183,10 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
 
     //create the control transport
     device_addr_t ctrl_xport_args;
-    ctrl_xport_args["recv_frame_size"] = boost::lexical_cast<std::string>(CTRL_PACKET_LENGTH);
+    ctrl_xport_args["recv_frame_size"] = "512";
     ctrl_xport_args["num_recv_frames"] = "16";
-    ctrl_xport_args["send_frame_size"] = boost::lexical_cast<std::string>(CTRL_PACKET_LENGTH);
-    ctrl_xport_args["num_send_frames"] = "4";
+    ctrl_xport_args["send_frame_size"] = "512";
+    ctrl_xport_args["num_send_frames"] = "16";
 
     _ctrl_transport = usb_zero_copy::make(
         handle,
@@ -198,17 +194,22 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
         3, 4, //interface, endpoint
         ctrl_xport_args
     );
-    while (_ctrl_transport->get_recv_buff(0.0)){} //flush ctrl xport
     this->enable_gpif(true);
 
     ////////////////////////////////////////////////////////////////////
-    // Initialize FPGA wishbone communication
+    // Initialize FPGA control communication
     ////////////////////////////////////////////////////////////////////
-    _fpga_ctrl = b100_ctrl::make(_ctrl_transport);
-    _fpga_ctrl->poke32(B100_REG_GLOBAL_RESET, 0); //global fpga reset
+    fifo_ctrl_excelsior_config fifo_ctrl_config;
+    fifo_ctrl_config.async_sid_base = B100_TX_ASYNC_SID;
+    fifo_ctrl_config.num_async_chan = 1;
+    fifo_ctrl_config.ctrl_sid_base = B100_CTRL_MSG_SID;
+    fifo_ctrl_config.spi_base = TOREG(SR_SPI);
+    fifo_ctrl_config.spi_rb = REG_RB_SPI;
+    _fifo_ctrl = fifo_ctrl_excelsior::make(_ctrl_transport, fifo_ctrl_config);
+
     //perform a test peek operation
     try{
-        _fpga_ctrl->peek32(0);
+        _fifo_ctrl->peek32(0);
     }
     //try reset once in the case of failure
     catch(const uhd::exception &){
@@ -216,7 +217,7 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
         UHD_MSG(warning) <<
             "The control endpoint was left in a bad state.\n"
             "Attempting endpoint re-enumeration...\n" << std::endl;
-        _fpga_ctrl.reset();
+        _fifo_ctrl.reset();
         _ctrl_transport.reset();
         _fx2_ctrl->usrp_fx2_reset();
         goto b100_impl_constructor_begin;
@@ -226,8 +227,7 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     ////////////////////////////////////////////////////////////////////
     // Initialize peripherals after reset
     ////////////////////////////////////////////////////////////////////
-    _fpga_i2c_ctrl = i2c_core_100::make(_fpga_ctrl, B100_REG_SLAVE(3));
-    _fpga_spi_ctrl = spi_core_100::make(_fpga_ctrl, B100_REG_SLAVE(2));
+    _fpga_i2c_ctrl = i2c_core_200::make(_fifo_ctrl, TOREG(SR_I2C), REG_RB_I2C);
 
     ////////////////////////////////////////////////////////////////////
     // Create data transport
@@ -241,6 +241,10 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     data_xport_args["send_frame_size"] = device_addr.get("send_frame_size", "16384");
     data_xport_args["num_send_frames"] = device_addr.get("num_send_frames", "16");
 
+    //let packet padder know the LUT size in number of words32
+    const size_t rx_lut_size = size_t(data_xport_args.cast<double>("recv_frame_size", 0.0));
+    _fifo_ctrl->poke32(TOREG(SR_PADDER+0), rx_lut_size/sizeof(boost::uint32_t));
+
     _data_transport = usb_zero_copy::make_wrapper(
         usb_zero_copy::make(
             handle,        // identifier
@@ -250,21 +254,21 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
         ),
         B100_MAX_PKT_BYTE_LIMIT
     );
-    while (_data_transport->get_recv_buff(0.0)){} //flush data xport
 
     ////////////////////////////////////////////////////////////////////
     // Initialize the properties tree
     ////////////////////////////////////////////////////////////////////
     _tree->create<std::string>("/name").set("B-Series Device");
     const fs_path mb_path = "/mboards/0";
-    _tree->create<std::string>(mb_path / "name").set("B100 (B-Hundo)");
+    _tree->create<std::string>(mb_path / "name").set("B100");
+    _tree->create<std::string>(mb_path / "codename").set("B-Hundo");
     _tree->create<std::string>(mb_path / "load_eeprom")
         .subscribe(boost::bind(&fx2_ctrl::usrp_load_eeprom, _fx2_ctrl, _1));
 
     ////////////////////////////////////////////////////////////////////
     // setup the mboard eeprom
     ////////////////////////////////////////////////////////////////////
-    const mboard_eeprom_t mb_eeprom(*_fx2_ctrl, mboard_eeprom_t::MAP_B100);
+    const mboard_eeprom_t mb_eeprom(*_fx2_ctrl, B100_EEPROM_MAP_KEY);
     _tree->create<mboard_eeprom_t>(mb_path / "eeprom")
         .set(mb_eeprom)
         .subscribe(boost::bind(&b100_impl::set_mb_eeprom, this, _1));
@@ -275,12 +279,17 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     //^^^ clock created up top, just reg props here... ^^^
     _tree->create<double>(mb_path / "tick_rate")
         .publish(boost::bind(&b100_clock_ctrl::get_fpga_clock_rate, _clock_ctrl))
+        .subscribe(boost::bind(&fifo_ctrl_excelsior::set_tick_rate, _fifo_ctrl, _1))
         .subscribe(boost::bind(&b100_impl::update_tick_rate, this, _1));
+
+    //subscribe the command time while we are at it
+    _tree->create<time_spec_t>(mb_path / "time/cmd")
+        .subscribe(boost::bind(&fifo_ctrl_excelsior::set_time, _fifo_ctrl, _1));
 
     ////////////////////////////////////////////////////////////////////
     // create codec control objects
     ////////////////////////////////////////////////////////////////////
-    _codec_ctrl = b100_codec_ctrl::make(_fpga_spi_ctrl);
+    _codec_ctrl = b100_codec_ctrl::make(_fifo_ctrl);
     const fs_path rx_codec_path = mb_path / "rx_codecs/A";
     const fs_path tx_codec_path = mb_path / "tx_codecs/A";
     _tree->create<std::string>(rx_codec_path / "name").set("ad9522");
@@ -302,8 +311,8 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     ////////////////////////////////////////////////////////////////////
     // create frontend control objects
     ////////////////////////////////////////////////////////////////////
-    _rx_fe = rx_frontend_core_200::make(_fpga_ctrl, B100_REG_SR_ADDR(B100_SR_RX_FRONT));
-    _tx_fe = tx_frontend_core_200::make(_fpga_ctrl, B100_REG_SR_ADDR(B100_SR_TX_FRONT));
+    _rx_fe = rx_frontend_core_200::make(_fifo_ctrl, TOREG(SR_RX_FE));
+    _tx_fe = tx_frontend_core_200::make(_fifo_ctrl, TOREG(SR_TX_FE));
 
     _tree->create<subdev_spec_t>(mb_path / "rx_subdev_spec")
         .subscribe(boost::bind(&b100_impl::update_rx_subdev_spec, this, _1));
@@ -332,13 +341,17 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     ////////////////////////////////////////////////////////////////////
     // create rx dsp control objects
     ////////////////////////////////////////////////////////////////////
-    _rx_dsps.push_back(rx_dsp_core_200::make(
-        _fpga_ctrl, B100_REG_SR_ADDR(B100_SR_RX_DSP0), B100_REG_SR_ADDR(B100_SR_RX_CTRL0), B100_RX_SID_BASE + 0
-    ));
-    _rx_dsps.push_back(rx_dsp_core_200::make(
-        _fpga_ctrl, B100_REG_SR_ADDR(B100_SR_RX_DSP1), B100_REG_SR_ADDR(B100_SR_RX_CTRL1), B100_RX_SID_BASE + 1
-    ));
-    for (size_t dspno = 0; dspno < _rx_dsps.size(); dspno++){
+    const size_t num_rx_dsps = _fifo_ctrl->peek32(REG_RB_NUM_RX_DSP);
+    for (size_t dspno = 0; dspno < num_rx_dsps; dspno++)
+    {
+        const size_t sr_off = dspno*32;
+        _rx_dsps.push_back(rx_dsp_core_200::make(
+            _fifo_ctrl,
+            TOREG(SR_RX_DSP0+sr_off),
+            TOREG(SR_RX_CTRL0+sr_off),
+            B100_RX_SID_BASE + dspno
+        ));
+
         _rx_dsps[dspno]->set_link_rate(B100_LINK_RATE_BPS);
         _tree->access<double>(mb_path / "tick_rate")
             .subscribe(boost::bind(&rx_dsp_core_200::set_tick_rate, _rx_dsps[dspno], _1));
@@ -361,7 +374,7 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     // create tx dsp control objects
     ////////////////////////////////////////////////////////////////////
     _tx_dsp = tx_dsp_core_200::make(
-        _fpga_ctrl, B100_REG_SR_ADDR(B100_SR_TX_DSP), B100_REG_SR_ADDR(B100_SR_TX_CTRL), B100_TX_ASYNC_SID
+        _fifo_ctrl, TOREG(SR_TX_DSP), TOREG(SR_TX_CTRL), B100_TX_ASYNC_SID
     );
     _tx_dsp->set_link_rate(B100_LINK_RATE_BPS);
     _tree->access<double>(mb_path / "tick_rate")
@@ -381,12 +394,12 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     // create time control objects
     ////////////////////////////////////////////////////////////////////
     time64_core_200::readback_bases_type time64_rb_bases;
-    time64_rb_bases.rb_hi_now = B100_REG_RB_TIME_NOW_HI;
-    time64_rb_bases.rb_lo_now = B100_REG_RB_TIME_NOW_LO;
-    time64_rb_bases.rb_hi_pps = B100_REG_RB_TIME_PPS_HI;
-    time64_rb_bases.rb_lo_pps = B100_REG_RB_TIME_PPS_LO;
+    time64_rb_bases.rb_hi_now = REG_RB_TIME_NOW_HI;
+    time64_rb_bases.rb_lo_now = REG_RB_TIME_NOW_LO;
+    time64_rb_bases.rb_hi_pps = REG_RB_TIME_PPS_HI;
+    time64_rb_bases.rb_lo_pps = REG_RB_TIME_PPS_LO;
     _time64 = time64_core_200::make(
-        _fpga_ctrl, B100_REG_SR_ADDR(B100_SR_TIME64), time64_rb_bases
+        _fifo_ctrl, TOREG(SR_TIME64), time64_rb_bases
     );
     _tree->access<double>(mb_path / "tick_rate")
         .subscribe(boost::bind(&time64_core_200::set_tick_rate, _time64, _1));
@@ -410,7 +423,7 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     ////////////////////////////////////////////////////////////////////
     // create user-defined control objects
     ////////////////////////////////////////////////////////////////////
-    _user = user_settings_core_200::make(_fpga_ctrl, B100_REG_SR_ADDR(B100_SR_USER_REGS));
+    _user = user_settings_core_200::make(_fifo_ctrl, TOREG(SR_USER_REGS));
     _tree->create<user_settings_core_200::user_reg_t>(mb_path / "user/regs")
         .subscribe(boost::bind(&user_settings_core_200::set_reg, _user, _1));
 
@@ -424,6 +437,9 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     tx_db_eeprom.load(*_fpga_i2c_ctrl, I2C_ADDR_TX_A);
     gdb_eeprom.load(*_fpga_i2c_ctrl, I2C_ADDR_TX_A ^ 5);
 
+    //disable rx dc offset if LFRX
+    if (rx_db_eeprom.id == 0x000f) _tree->access<bool>(rx_fe_path / "dc_offset" / "enable").set(false);
+
     //create the properties and register subscribers
     _tree->create<dboard_eeprom_t>(mb_path / "dboards/A/rx_eeprom")
         .set(rx_db_eeprom)
@@ -436,7 +452,7 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
         .subscribe(boost::bind(&b100_impl::set_db_eeprom, this, "gdb", _1));
 
     //create a new dboard interface and manager
-    _dboard_iface = make_b100_dboard_iface(_fpga_ctrl, _fpga_i2c_ctrl, _fpga_spi_ctrl, _clock_ctrl, _codec_ctrl);
+    _dboard_iface = make_b100_dboard_iface(_fifo_ctrl, _fpga_i2c_ctrl, _fifo_ctrl/*spi*/, _clock_ctrl, _codec_ctrl);
     _tree->create<dboard_iface::sptr>(mb_path / "dboards/A/iface").set(_dboard_iface);
     _dboard_manager = dboard_manager::make(
         rx_db_eeprom.id, tx_db_eeprom.id, gdb_eeprom.id,
@@ -456,7 +472,11 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
     }
 
     //initialize io handling
-    this->io_init();
+    _recv_demuxer = recv_packet_demuxer::make(_data_transport, _rx_dsps.size(), B100_RX_SID_BASE);
+
+    //allocate streamer weak ptrs containers
+    _rx_streamers.resize(_rx_dsps.size());
+    _tx_streamers.resize(1/*known to be 1 dsp*/);
 
     ////////////////////////////////////////////////////////////////////
     // do some post-init tasks
@@ -481,8 +501,7 @@ b100_impl::b100_impl(const device_addr_t &device_addr){
 }
 
 b100_impl::~b100_impl(void){
-    //set an empty async callback now that we deconstruct
-    _fpga_ctrl->set_async_cb(b100_ctrl::async_cb_type());
+    //NOP
 }
 
 void b100_impl::check_fw_compat(void){
@@ -493,13 +512,14 @@ void b100_impl::check_fw_compat(void){
     if (fw_compat_num != B100_FW_COMPAT_NUM){
         throw uhd::runtime_error(str(boost::format(
             "Expected firmware compatibility number 0x%x, but got 0x%x:\n"
-            "The firmware build is not compatible with the host code build."
-        ) % B100_FW_COMPAT_NUM % fw_compat_num));
+            "The firmware build is not compatible with the host code build.\n"
+            "%s"
+        ) % B100_FW_COMPAT_NUM % fw_compat_num % print_images_error()));
     }
 }
 
 void b100_impl::check_fpga_compat(void){
-    const boost::uint32_t fpga_compat_num = _fpga_ctrl->peek32(B100_REG_RB_COMPAT);
+    const boost::uint32_t fpga_compat_num = _fifo_ctrl->peek32(REG_RB_COMPAT);
     boost::uint16_t fpga_major = fpga_compat_num >> 16, fpga_minor = fpga_compat_num & 0xffff;
     if (fpga_major == 0){ //old version scheme
         fpga_major = fpga_minor;
@@ -509,7 +529,8 @@ void b100_impl::check_fpga_compat(void){
         throw uhd::runtime_error(str(boost::format(
             "Expected FPGA compatibility number %d, but got %d:\n"
             "The FPGA build is not compatible with the host code build."
-        ) % int(B100_FPGA_COMPAT_NUM) % fpga_major));
+            "%s"
+        ) % int(B100_FPGA_COMPAT_NUM) % fpga_major % print_images_error()));
     }
     _tree->create<std::string>("/mboards/0/fpga_version").set(str(boost::format("%u.%u") % fpga_major % fpga_minor));
 }
@@ -523,7 +544,7 @@ double b100_impl::update_rx_codec_gain(const double gain){
 }
 
 void b100_impl::set_mb_eeprom(const uhd::usrp::mboard_eeprom_t &mb_eeprom){
-    mb_eeprom.commit(*_fx2_ctrl, mboard_eeprom_t::MAP_B100);
+    mb_eeprom.commit(*_fx2_ctrl, B100_EEPROM_MAP_KEY);
 }
 
 void b100_impl::set_db_eeprom(const std::string &type, const uhd::usrp::dboard_eeprom_t &db_eeprom){
@@ -533,6 +554,19 @@ void b100_impl::set_db_eeprom(const std::string &type, const uhd::usrp::dboard_e
 }
 
 void b100_impl::update_clock_source(const std::string &source){
+
+    if (source == "pps_sync"){
+        _clock_ctrl->use_external_ref();
+        _fifo_ctrl->poke32(TOREG(SR_MISC+2), 1);
+        return;
+    }
+    if (source == "_pps_sync_"){
+        _clock_ctrl->use_external_ref();
+        _fifo_ctrl->poke32(TOREG(SR_MISC+2), 3);
+        return;
+    }
+    _fifo_ctrl->poke32(TOREG(SR_MISC+2), 0);
+
     if      (source == "auto")     _clock_ctrl->use_auto_ref();
     else if (source == "internal") _clock_ctrl->use_internal_ref();
     else if (source == "external") _clock_ctrl->use_external_ref();

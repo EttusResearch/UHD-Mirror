@@ -95,12 +95,18 @@ ifdef HAS_XTCLSH
 
 _usrp_b100_fpga_dir = $(TOP_FPGA_DIR)/usrp2/top/B100
 _usrp_b100_fpga_bin = $(BUILT_IMAGES_DIR)/usrp_b100_fpga.bin
-IMAGES_LIST += $(_usrp_b100_fpga_bin)
+_usrp_b100_fpga_2rx_bin = $(BUILT_IMAGES_DIR)/usrp_b100_fpga_2rx.bin
+IMAGES_LIST += $(_usrp_b100_fpga_bin) $(_usrp_b100_fpga_2rx_bin)
 
 $(_usrp_b100_fpga_bin): $(GLOBAL_DEPS)
 	cd $(_usrp_b100_fpga_dir) && make -f Makefile.B100 clean
 	cd $(_usrp_b100_fpga_dir) && make -f Makefile.B100 bin
 	cp $(_usrp_b100_fpga_dir)/build-B100/B100.bin $@
+
+$(_usrp_b100_fpga_2rx_bin): $(GLOBAL_DEPS)
+	cd $(_usrp_b100_fpga_dir) && make -f Makefile.B100_2RX clean
+	cd $(_usrp_b100_fpga_dir) && make -f Makefile.B100_2RX bin
+	cp $(_usrp_b100_fpga_dir)/build-B100_2RX/B100.bin $@
 
 endif
 
@@ -250,7 +256,7 @@ IMAGES_LIST += $(_usrp_e100_fpga_bin)
 $(_usrp_e100_fpga_bin): $(GLOBAL_DEPS)
 	cd $(_usrp_e100_fpga_dir) && make -f Makefile.E100 clean
 	cd $(_usrp_e100_fpga_dir) && make -f Makefile.E100 bin
-	cp $(_usrp_e100_fpga_dir)/build-E100/u1e.bin $@
+	cp $(_usrp_e100_fpga_dir)/build-E100/E1x0.bin $@
 
 endif
 
@@ -266,7 +272,7 @@ IMAGES_LIST += $(_usrp_e110_fpga_bin)
 $(_usrp_e110_fpga_bin): $(GLOBAL_DEPS)
 	cd $(_usrp_e110_fpga_dir) && make -f Makefile.E110 clean
 	cd $(_usrp_e110_fpga_dir) && make -f Makefile.E110 bin
-	cp $(_usrp_e110_fpga_dir)/build-E110/u1e.bin $@
+	cp $(_usrp_e110_fpga_dir)/build-E110/E1x0.bin $@
 
 endif
 

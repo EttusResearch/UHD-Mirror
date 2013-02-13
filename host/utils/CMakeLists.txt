@@ -1,5 +1,5 @@
 #
-# Copyright 2010-2011 Ettus Research LLC
+# Copyright 2010-2012 Ettus Research LLC
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -38,8 +38,10 @@ ENDFOREACH(util_source)
 # Utilities that get installed into the share path
 ########################################################################
 SET(util_share_sources
+    query_gpsdo_sensors.cpp
     usrp_burn_db_eeprom.cpp
     usrp_burn_mb_eeprom.cpp
+    usrp_n2xx_simple_net_burner.cpp
 )
 
 IF(ENABLE_USB)
@@ -64,6 +66,17 @@ FOREACH(util_source ${util_share_sources})
     INSTALL(TARGETS ${util_name} RUNTIME DESTINATION ${PKG_LIB_DIR}/utils COMPONENT utilities)
 ENDFOREACH(util_source)
 
+#UHD images downloader configuration
+CONFIGURE_FILE(
+    ${CMAKE_CURRENT_SOURCE_DIR}/uhd_images_downloader.py.in
+    ${CMAKE_CURRENT_BINARY_DIR}/uhd_images_downloader.py
+@ONLY)
+INSTALL(PROGRAMS
+    ${CMAKE_CURRENT_BINARY_DIR}/uhd_images_downloader.py
+    DESTINATION ${PKG_LIB_DIR}/utils
+    COMPONENT utilities
+)
+
 IF(ENABLE_USRP2)
     IF(WIN32 AND UHD_RELEASE_MODE) #include dd.exe
         FILE(DOWNLOAD
@@ -76,8 +89,14 @@ IF(ENABLE_USRP2)
             COMPONENT utilities
         )
     ENDIF(WIN32 AND UHD_RELEASE_MODE)
+    IF(LINUX)
+        INSTALL(PROGRAMS
+            usrp2_recovery.py
+            DESTINATION ${PKG_LIB_DIR}/utils
+            COMPONENT utilities
+        )
+    ENDIF(LINUX)
     INSTALL(PROGRAMS
-        usrp2_recovery.py
         usrp2_card_burner.py
         usrp2_card_burner_gui.py
         usrp_n2xx_net_burner.py

@@ -1,5 +1,5 @@
 //
-// Copyright 2010 Ettus Research LLC
+// Copyright 2011-2012 Ettus Research LLC
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -19,11 +19,14 @@
 #include <uhd/property_tree.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
 #include <uhd/usrp/dboard_eeprom.hpp>
+#include <uhd/utils/paths.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/format.hpp>
 #include <iostream>
 #include <vector>
 #include <complex>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 
 namespace fs = boost::filesystem;
@@ -68,7 +71,13 @@ static inline void set_optimum_defaults(uhd::usrp::multi_usrp::sptr usrp){
 
     const uhd::fs_path tx_fe_path = "/mboards/0/dboards/A/tx_frontends/0";
     const std::string tx_name = tree->access<std::string>(tx_fe_path / "name").get();
-    if (tx_name.find("WBX") != std::string::npos or tx_name.find("SBX") != std::string::npos){
+    if (tx_name.find("WBX") != std::string::npos){
+        usrp->set_tx_gain(0);
+    }
+    else if (tx_name.find("SBX") != std::string::npos){
+        usrp->set_tx_gain(0);
+    }
+    else if (tx_name.find("RFX") != std::string::npos){
         usrp->set_tx_gain(0);
     }
     else{
@@ -77,13 +86,43 @@ static inline void set_optimum_defaults(uhd::usrp::multi_usrp::sptr usrp){
 
     const uhd::fs_path rx_fe_path = "/mboards/0/dboards/A/tx_frontends/0";
     const std::string rx_name = tree->access<std::string>(rx_fe_path / "name").get();
-    if (rx_name.find("WBX") != std::string::npos or rx_name.find("SBX") != std::string::npos){
+    if (rx_name.find("WBX") != std::string::npos){
+        usrp->set_rx_gain(25);
+    }
+    else if (rx_name.find("SBX") != std::string::npos){
+        usrp->set_rx_gain(25);
+    }
+    else if (rx_name.find("RFX") != std::string::npos){
         usrp->set_rx_gain(25);
     }
     else{
         throw std::runtime_error("self-calibration is not supported for this hardware");
     }
 
+}
+
+/***********************************************************************
+ * Check for empty serial
+ **********************************************************************/
+
+void check_for_empty_serial(
+    uhd::usrp::multi_usrp::sptr usrp,
+    std::string XX,
+    std::string xx,
+    std::string uhd_args
+){
+
+    //extract eeprom
+    uhd::property_tree::sptr tree = usrp->get_device()->get_tree();
+    const uhd::fs_path db_path = "/mboards/0/dboards/A/" + xx + "_eeprom";
+    const uhd::usrp::dboard_eeprom_t db_eeprom = tree->access<uhd::usrp::dboard_eeprom_t>(db_path).get();
+
+    std::string args_str = "";
+    if(uhd_args != "") args_str = str(boost::format(" --args=%s") % uhd_args);
+
+    std::string error_string = str(boost::format("This %s dboard has no serial!\n\nPlease see the Calibration documentation for details on how to fix this.") % XX);
+
+    if (db_eeprom.serial.empty()) throw std::runtime_error(error_string);
 }
 
 /***********************************************************************
@@ -148,7 +187,6 @@ static void store_results(
     uhd::property_tree::sptr tree = usrp->get_device()->get_tree();
     const uhd::fs_path db_path = "/mboards/0/dboards/A/" + xx + "_eeprom";
     const uhd::usrp::dboard_eeprom_t db_eeprom = tree->access<uhd::usrp::dboard_eeprom_t>(db_path).get();
-    if (db_eeprom.serial.empty()) throw std::runtime_error(XX + " dboard has empty serial!");
 
     //make the calibration file path
     fs::path cal_data_path = fs::path(uhd::get_app_path()) / ".uhd";

@@ -84,11 +84,7 @@ static device_addrs_t usrp1_find(const device_addr_t &hint)
             usrp1_fw_image = find_image_path(hint.get("fw", "usrp1_fw.ihx"));
         }
         catch(...){
-            UHD_MSG(warning) << boost::format(
-                "Could not locate USRP1 firmware.\n"
-                "Please install the images package.\n"
-            );
-            return usrp1_addrs;
+            UHD_MSG(warning) << boost::format("Could not locate USRP1 firmware. %s") % print_images_error();
         }
         UHD_LOG << "USRP1 firmware image: " << usrp1_fw_image << std::endl;
 
@@ -116,7 +112,7 @@ static device_addrs_t usrp1_find(const device_addr_t &hint)
             catch(const uhd::exception &){continue;} //ignore claimed
 
             fx2_ctrl::sptr fx2_ctrl = fx2_ctrl::make(control);
-            const mboard_eeprom_t mb_eeprom(*fx2_ctrl, mboard_eeprom_t::MAP_B000);
+            const mboard_eeprom_t mb_eeprom(*fx2_ctrl, USRP1_EEPROM_MAP_KEY);
             device_addr_t new_addr;
             new_addr["type"] = "usrp1";
             new_addr["name"] = mb_eeprom["name"];
@@ -209,14 +205,20 @@ usrp1_impl::usrp1_impl(const device_addr_t &device_addr){
     _tree = property_tree::make();
     _tree->create<std::string>("/name").set("USRP1 Device");
     const fs_path mb_path = "/mboards/0";
-    _tree->create<std::string>(mb_path / "name").set("USRP1 (Classic)");
+    _tree->create<std::string>(mb_path / "name").set("USRP1");
     _tree->create<std::string>(mb_path / "load_eeprom")
         .subscribe(boost::bind(&fx2_ctrl::usrp_load_eeprom, _fx2_ctrl, _1));
 
     ////////////////////////////////////////////////////////////////////
+    // create user-defined control objects
+    ////////////////////////////////////////////////////////////////////
+    _tree->create<std::pair<boost::uint8_t, boost::uint32_t> >(mb_path / "user" / "regs")
+        .subscribe(boost::bind(&usrp1_impl::set_reg, this, _1));
+
+    ////////////////////////////////////////////////////////////////////
     // setup the mboard eeprom
     ////////////////////////////////////////////////////////////////////
-    const mboard_eeprom_t mb_eeprom(*_fx2_ctrl, mboard_eeprom_t::MAP_B000);
+    const mboard_eeprom_t mb_eeprom(*_fx2_ctrl, USRP1_EEPROM_MAP_KEY);
     _tree->create<mboard_eeprom_t>(mb_path / "eeprom")
         .set(mb_eeprom)
         .subscribe(boost::bind(&usrp1_impl::set_mb_eeprom, this, _1));
@@ -353,6 +355,9 @@ usrp1_impl::usrp1_impl(const device_addr_t &device_addr){
         tx_db_eeprom.load(*_fx2_ctrl, (db == "A")? (I2C_ADDR_TX_A) : (I2C_ADDR_TX_B));
         gdb_eeprom.load(*_fx2_ctrl, (db == "A")? (I2C_ADDR_TX_A ^ 5) : (I2C_ADDR_TX_B ^ 5));
 
+        //disable rx dc offset if LFRX
+        if (rx_db_eeprom.id == 0x000f) _tree->access<bool>(mb_path / "rx_frontends" / db / "dc_offset" / "enable").set(false);
+
         //create the properties and register subscribers
         _tree->create<dboard_eeprom_t>(mb_path / "dboards" / db/ "rx_eeprom")
             .set(rx_db_eeprom)
@@ -447,7 +452,7 @@ bool usrp1_impl::has_tx_halfband(void){
  * Properties callback methods below
  **********************************************************************/
 void usrp1_impl::set_mb_eeprom(const uhd::usrp::mboard_eeprom_t &mb_eeprom){
-    mb_eeprom.commit(*_fx2_ctrl, mboard_eeprom_t::MAP_B000);
+    mb_eeprom.commit(*_fx2_ctrl, USRP1_EEPROM_MAP_KEY);
 }
 
 void usrp1_impl::set_db_eeprom(const std::string &db, const std::string &type, const uhd::usrp::dboard_eeprom_t &db_eeprom){
@@ -495,4 +500,9 @@ std::complex<double> usrp1_impl::set_rx_dc_offset(const std::string &db, const s
     }
 
     return std::complex<double>(double(i_off) * (1ul << 31), double(q_off) * (1ul << 31));
+}
+
+void usrp1_impl::set_reg(const std::pair<boost::uint8_t, boost::uint32_t> &reg)
+{
+    _iface->poke32(reg.first, reg.second);
 }
